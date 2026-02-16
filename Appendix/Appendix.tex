@@ -1,0 +1,1264 @@
+
+\documentclass[a4paper,11pt]{article} 
+\usepackage[margin=1in]{geometry} 
+\usepackage{amsmath, amssymb, amsthm, mathtools} 
+\usepackage{booktabs} 
+\usepackage{xcolor}
+\usepackage[colorlinks=true, linkcolor=blue!70!black, citecolor=green!60!black, urlcolor=black]{hyperref}
+\usepackage{cleveref}
+\usepackage{tikz}
+\usepackage{subcaption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{calc, positioning, backgrounds}
+
+
+\newcommand{\mat}[1]{\mathbf{#1}}       % Matrix
+\newcommand{\vect}[1]{\mathbf{#1}}      % Vector
+\newcommand{\dt}{\Delta t}              % Delta t 
+\newcommand{\Abar}{\overline{\mat{A}}}  % Discretised A
+\newcommand{\Bbar}{\overline{\mat{B}}}  % Discretised B
+\newcommand{\Kbar}{\overline{\mat{K}}}  % Discretised K
+\newcommand{\Real}{\mathbb{R}}   % Real number space
+\newcommand{\sectionbreak}{\clearpage}
+
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries\sffamily}{Appendix \thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries\sffamily}{\thesubsection}{1em}{}
+
+\begin{document}
+\appendix
+\section{Discretisation}\label{app:discretisation}
+The fundamental innovation of modern State Space Models (such as LSSL and S4) lies in their ability to be interpreted through three distinct, yet mathematically equivalent, lenses. As shown in Figure \ref{fig:ssm_views}, each view offers specific computational or theoretical advantages:
+
+\begin{enumerate}
+    \item \textbf{The Continuous View (ODE):} 
+    \begin{equation}\label{eq:continuous_view}
+        \dot{x}(t) = A x(t) + B u(t)
+    \end{equation}
+    The continuous view forms the theoretical foundation. It aligns with the continuous nature of real-world signals, enabling the use of HiPPO matrices to model long-range memory.
+
+    \item \textbf{The Recurrent View (RNN):}
+    \begin{equation}\label{eq:recurrent_view}
+        x_{k+1} = \overline{A} x_k + \overline{B} u_k
+    \end{equation}
+    This implies a step-by-step evolution of the state. It is essential for efficient \textbf{inference} where inputs arrive sequentially.
+
+    \item \textbf{The Convolutional View (CNN):}
+    \begin{equation}\label{eq:convolutional_view}
+        y = \overline{K} * u
+    \end{equation}
+    This views the system as a filter. It is critical for efficient \textbf{training}, allowing parallel computation over the entire sequence.
+\end{enumerate}
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.9\linewidth]{imgs/3views_transformation.png}
+    \caption{\textbf{The SSM Representations.} The model can be transformed from a continuous ODE (left) to a discrete recurrence (centre) and unrolled into a global convolution (right).\cite{gu2022s4blog}}
+    \label{fig:ssm_views}
+\end{figure}
+
+To transfer from the theoretical \textbf{Continuous View} to \textbf{Recurrent View}, we must transform the continuous parameters $(A, B)$ into discrete parameters $(\overline{A}, \overline{B})$ using a time step $\Delta t$. This process is termed \textbf{Discretisation}.
+
+There is no single "correct" method to perform this transformation. In this appendix, we derive the discrete matrices by analysing the problem from three different methodological perspectives:
+
+\begin{itemize}
+    \item \textbf{Perspective 1: Numerical Integration.} We approximate the area under the derivative curve (solving $\int \dot{x} d\tau$).
+    \item \textbf{Perspective 2: Gradient Approximation.} We project the state forward using geometric slope approximations (Forward, Backward, and Average slopes).
+    \item \textbf{Perspective 3: The Exact Solution (ZOH).} We derive the analytical solution of the ODE assuming a Zero-Order Hold on the input.
+\end{itemize}
+
+The following sections detail these derivations and theoretically justify why the \textbf{Bilinear (Trapezoidal)} method is the preferred choice for models like the LSSL via both empirical validation and comparisons on Taylor series expansion.
+
+\subsection{Numerical Integration}
+We start with the continuous-time linear time-invariant (LTI) ordinary differential equation (ODE):
+\begin{equation}\label{eq:ode_base}
+    \dot{x}(t) = A x(t) + B u(t)
+\end{equation}
+To determine the state evolution over the interval $[t, t + \Delta t]$, we integrate both sides of the equation:
+\begin{equation}\label{eq:itegral_both_sides}
+    \int_{t}^{t+\Delta t} \dot{x}(\tau) \, d\tau = \int_{t}^{t+\Delta t} (A x(\tau) + B u(\tau)) \, d\tau
+\end{equation}
+Evaluating the left-hand side yields the difference between the final and initial states. For notational brevity, we define $x_k = x(t)$ and $x_{k+1} = x(t+\Delta t)$:
+\begin{equation}\label{eq:integral_form}
+    x_{k+1} - x_k = \int_{t}^{t+\Delta t} (A x(\tau) + B u(\tau)) \, d\tau
+\end{equation}
+
+
+Following the integration in Eq.~\eqref{eq:integral_form}, the fundamental challenge lies in evaluating the definite integral on the right-hand side. As the trajectories of the state $x(\tau)$ and input $u(\tau)$ are unknown within the interval $\tau \in [t, t+\Delta t]$, we must employ numerical approximation methods. 
+
+We can approximate the integral $\int_{t}^{t+\Delta t} f(\tau) d\tau \approx \Delta t \cdot \Phi$ using different schemes for the slope $\Phi$. This results in three distinct discretisation methods: Forward Euler, Backward Euler, and the Bilinear (Trapezoidal) transformation.
+
+\subsubsection{Forward Euler (Explicit)}
+The Forward Euler method approximates the area under the curve using a rectangle based on the gradient at the \textit{start} of the interval (time $t$). We assume the derivatives remain constant at their initial values:
+\begin{align} 
+    \int_{t}^{t+\Delta t} (A x(\tau) + B u(\tau)) \, d\tau &\approx \Delta t (A x_k + B u_k) \label{eq:fe_approx} \\
+    \implies x_{k+1} - x_k &= \Delta t A x_k + \Delta t B u_k \notag \\
+    \implies x_{k+1} &= (I + \Delta t A) x_k + \Delta t B u_k \label{eq:fe_final}
+\end{align}
+\textit{Note:} As shown in Eq.~\eqref{eq:fe_final}, this method requires no matrix inversion but is only conditionally stable.
+
+\subsubsection{Backward Euler (Implicit)}
+The Backward Euler method uses the gradient at the \textit{end} of the interval ($t + \Delta t$). We assume values at the next time step dominate:
+\begin{equation}
+    \int_{t}^{t+\Delta t} (A x(\tau) + B u(\tau)) \, d\tau \approx \Delta t (A x_{k+1} + B u_{k+1})
+\end{equation}
+Substituting this yields an implicit equation:
+\begin{align}
+    x_{k+1} - x_k &= \Delta t A x_{k+1} + \Delta t B u_{k+1} \notag \\
+    (I - \Delta t A) x_{k+1} &= x_k + \Delta t B u_{k+1} \notag \\
+    x_{k+1} &= (I - \Delta t A)^{-1} x_k + (I - \Delta t A)^{-1} \Delta t B u_{k+1} \label{eq:be_final}
+\end{align}
+Eq.~\eqref{eq:be_final} shows that this method requires matrix inversion.
+
+\subsubsection{Bilinear / Trapezoidal (Implicit)}
+The Bilinear transform (Tustin's method) approximates the integral using the area of a trapezoid, effectively averaging the gradients at the start and end of the interval. This offers a balance between the Forward and Backward schemes and preserves the stability boundary of the continuous system.
+\begin{equation}
+    \int_{t}^{t+\Delta t} (A x(\tau) + B u(\tau)) \, d\tau \approx \frac{\Delta t}{2} (A x_k + A x_{k+1}) + \frac{\Delta t}{2} (B u_k + B u_{k+1})
+\end{equation}
+Substituting this into the state equation:
+\begin{equation}
+    x_{k+1} - x_k = \frac{\Delta t}{2} A (x_k + x_{k+1}) + \frac{\Delta t}{2} B (u_k + u_{k+1})
+\end{equation}
+To isolate $x_{k+1}$, we collect terms on the left-hand side:
+\begin{equation}
+    \left( I - \frac{\Delta t}{2} A \right) x_{k+1} = \left( I + \frac{\Delta t}{2} A \right) x_k + \frac{\Delta t}{2} B (u_k + u_{k+1})
+\end{equation}
+Finally, applying the matrix inverse yields the discretised system:
+\begin{equation}
+    x_{k+1} = \underbrace{\left( I - \frac{\Delta t}{2} A \right)^{-1} \left( I + \frac{\Delta t}{2} A \right)}_{\overline{A}} x_k + \underbrace{\left( I - \frac{\Delta t}{2} A \right)^{-1} \frac{\Delta t}{2} B}_{\overline{B}} (u_k + u_{k+1})
+\end{equation}
+\textit{Note on Input Handling:} In many sequence modelling implementations (e.g. S4), a Zero-Order Hold (ZOH) is assumed for the input ($u(\tau) \approx u_k$). In that specific case, the input term simplifies to $(I - \frac{\Delta t}{2} A)^{-1} \Delta t B u_k$.
+
+
+
+\subsection{Geometric Derivation via Gradient Approximation}
+\label{sec:geometric_derivation}
+
+An alternative derivation can be established by examining the geometric interpretation of the derivative. Rather than integrating the area under the curve, we approximate the state trajectory using the finite difference quotient.
+
+Recall the definition of the derivative:
+\begin{equation}
+    \dot{x}(t) = \lim_{\Delta t \to 0} \frac{x(t+\Delta t) - x(t)}{\Delta t}
+\end{equation}
+For a finite step size $\Delta t$, we can approximate the next state $x_{k+1}$ by projecting from the current state $x_k$ along a gradient vector $\mathbf{k}$:
+\begin{equation} \label{eq:gradient_proj}
+    x_{k+1} \approx x_k + \Delta t \cdot \mathbf{k}
+\end{equation}
+The continuous ODE gives us the exact instantaneous gradient at any point: $\dot{x}(t) = A x(t) + B u(t)$. The difference between the discretisation methods lies entirely in \textit{at which point in time} we choose to sample this gradient $\mathbf{k}$.
+
+\subsubsection{Forward Euler (Left-Sided Slope)}
+\textbf{Geometric Intuition:} We assume the gradient remains constant throughout the interval $[t, t+\Delta t]$, fixed at its initial value. We simply extend the tangent line at $x(t)$ forward in time.
+
+\begin{itemize}
+    \item \textbf{Gradient Choice:} $\mathbf{k} = \dot{x}(t) = A x_k + B u_k$
+\end{itemize}
+
+Substituting this into Eq.~\eqref{eq:gradient_proj} yields the explicit update:
+\begin{equation} \label{eq:fe_geom}
+    x_{k+1} = (I + \Delta t A) x_k + \Delta t B u_k
+\end{equation}
+
+\subsubsection{Backward Euler (Right-Sided Slope)}
+\textbf{Geometric Intuition:} We assume the gradient across the interval is determined by the slope at the \textit{destination} point $x(t+\Delta t)$. This is akin to finding a point in the future such that looking backwards with that slope leads to our current position.
+
+\begin{itemize}
+    \item \textbf{Gradient Choice:} $\mathbf{k} = \dot{x}(t+\Delta t) = A x_{k+1} + B u_{k+1}$
+\end{itemize}
+
+Substituting this into the projection equation:
+\begin{equation}
+    x_{k+1} = x_k + \Delta t (A x_{k+1} + B u_{k+1})
+\end{equation}
+Rearranging to solve for the unknown $x_{k+1}$:
+\begin{align}
+    x_{k+1} - \Delta t A x_{k+1} &= x_k + \Delta t B u_{k+1} \notag \\
+    x_{k+1} &= (I - \Delta t A)^{-1} x_k + (I - \Delta t A)^{-1} \Delta t B u_{k+1} \label{eq:be_geom}
+\end{align}
+
+\subsubsection{Bilinear / Trapezoidal (Average Slope)}
+\textbf{Geometric Intuition:} To achieve a more accurate approximation, we define the gradient $\mathbf{k}$ as the arithmetic mean of the initial tangent (at $t$) and the final tangent (at $t+\Delta t$). This compensates for the curvature of the trajectory.
+
+\begin{itemize}
+    \item \textbf{Gradient Choice:} $\mathbf{k} = \frac{1}{2} \left( \dot{x}(t) + \dot{x}(t+\Delta t) \right)$
+\end{itemize}
+
+Substituting the ODE definitions for the slopes:
+\begin{equation}
+    \mathbf{k} = \frac{1}{2} \left[ (A x_k + B u_k) + (A x_{k+1} + B u_{k+1}) \right]
+\end{equation}
+Plugging this into the projection equation and grouping terms:
+\begin{align}
+    x_{k+1} &= x_k + \frac{\Delta t}{2} (A x_k + A x_{k+1}) + \frac{\Delta t}{2} (B u_k + B u_{k+1}) \notag \\
+    \left(I - \frac{\Delta t}{2} A \right) x_{k+1} &= \left(I + \frac{\Delta t}{2} A \right) x_k + \frac{\Delta t}{2} B (u_k + u_{k+1})
+\end{align}
+Which results in the familiar Bilinear form:
+\begin{equation} \label{eq:bilinear_geom}
+    x_{k+1} = \left( I - \frac{\Delta t}{2} A \right)^{-1} \left( I + \frac{\Delta t}{2} A \right) x_k + \dots
+\end{equation}
+
+\begin{figure}[htbp]
+    \centering
+    \pgfplotsset{
+        tufteplot/.style={
+            width=5.2cm, height=4.5cm,
+            axis lines=left,
+            xtick={\empty}, ytick={\empty},
+            xmin=0.5, xmax=3.5, ymin=0.5, ymax=3.2,
+            axis line style={-}, 
+            xlabel style={at={(axis description cs:1,0)},anchor=north},
+            ylabel style={at={(axis description cs:0,1)},anchor=south,rotate=-90},
+            clip=false
+        }
+    }
+
+    % --- Forward Euler ---
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[tufteplot, title={\small\textbf{(a) Forward Euler}}]
+                \addplot[thick, blue!80!black, domain=0.8:3.2] {ln(x) + 1}; % True
+                \coordinate (curr) at (axis cs:1, 1);
+                \coordinate (next) at (axis cs:3, 2.1);
+                \coordinate (pred) at (axis cs:3, 3);
+                
+                \draw[dashed, gray] (curr) -- (1,0) node[below, black] {$t$};
+                \draw[dashed, gray] (next) -- (3,0) node[below, black] {$t{+}\Delta t$};
+                
+                % Tangent line
+                \addplot[red!80!black, thick, domain=0.8:3.2] {x}; 
+                \filldraw[black] (curr) circle (1.5pt) node[left] {$x_k$};
+                \filldraw[red] (pred) circle (1.5pt) node[right] {$x_{k+1}$};
+                \node[anchor=south west, font=\footnotesize, text=red!80!black] at (axis cs:1.2, 1.2) {Slope $\dot{x}_t$};
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \hfill
+    % --- Backward Euler ---
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[tufteplot, title={\small\textbf{(b) Backward Euler}}]
+                \addplot[thick, blue!80!black, domain=0.8:3.2] {ln(x) + 1};
+                \coordinate (curr) at (axis cs:1, 1);
+                \coordinate (next) at (axis cs:3, 2.1);
+                
+                \draw[dashed, gray] (curr) -- (1,0) node[below, black] {$t$};
+                \draw[dashed, gray] (next) -- (3,0) node[below, black] {$t{+}\Delta t$};
+                
+                % Slope at t+dt is 1/3
+                \addplot[red!80!black, thick, domain=0.8:3.2] {0.333*x + 0.666};
+                \filldraw[black] (curr) circle (1.5pt) node[left] {$x_k$};
+                \filldraw[red] (axis cs:3, 1.666) circle (1.5pt) node[right] {$x_{k+1}$};
+                \node[anchor=north west, font=\footnotesize, text=red!80!black] at (axis cs:1.2, 1.2) {Slope $\dot{x}_{t+\Delta t}$};
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \hfill
+    % --- Bilinear ---
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[tufteplot, title={\small\textbf{(c) Bilinear (Trapezoidal)}}]
+                \addplot[thick, blue!80!black, domain=0.8:3.2] {ln(x) + 1};
+                \coordinate (curr) at (axis cs:1, 1);
+                
+                \draw[dashed, gray] (curr) -- (1,0) node[below, black] {$t$};
+                \draw[dashed, gray] (axis cs:3, 2.1) -- (3,0) node[below, black] {$t{+}\Delta t$};
+                
+                % Avg Slope approx 0.66
+                \addplot[red!80!black, thick, domain=0.8:3.2] {0.666*x + 0.333};
+                \filldraw[black] (curr) circle (1.5pt) node[left] {$x_k$};
+                \filldraw[red] (axis cs:3, 2.33) circle (1.5pt) node[right] {$x_{k+1}$};
+                
+                % Secant visual
+                \draw[dotted, thick, gray!80] (curr) -- (axis cs:3, 2.1);
+                \node[anchor=south east, font=\footnotesize, text=red!80!black] at (axis cs:2.8, 2.3) {Avg Slope};
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{\textbf{Geometric Interpretation.} Comparison of gradient approximations. Forward Euler (Left) overshoots on concave curves; Backward Euler (Middle) heavily damps the step; Bilinear (Right) uses the average slope, closely tracking the curvature.}
+    \label{fig:geo_interp}
+\end{figure}
+
+
+
+
+
+\subsection{Comparative Analysis: Selecting the Optimal Discretisation}
+\label{sec:comparative_analysis}
+
+Having established three distinct discretisation methods (Forward Euler, Backward Euler, and Bilinear) via both integration and gradient approximation, a natural question arises: \textit{Which method yields the most accurate representation of the underlying continuous dynamics?} 
+
+To answer this, we employ a two-fold evaluation strategy: first, an empirical reconstruction task to observe stability and phase properties; and second, a theoretical comparison against the analytical exact solution.
+
+\subsubsection{Empirical Validation: The Reconstruction Task}
+\label{sec:empirical_validation}
+
+To complement the theoretical derivations, we evaluate the discretisation methods on a Memory Reconstruction task. This experiment tests the system's ability to maintain a memory of the input signal over a long duration.
+
+We define a State Space Model with state dimensions $N \in \{64, 128, 256\}$. The task is to reconstruct a stochastic input signal $u(t)$ after a fixed time delay.
+\begin{itemize}
+    \item \textbf{Input Signal:} White Noise ($\mathcal{N}(0,1)$), chosen for its high-frequency content which stresses the stability of the discretisation.
+    \item \textbf{Lag:} 100 time steps.
+    \item \textbf{Sequence Length:} $L=2000$.
+    \item \textbf{Step Size:} $\Delta t = 0.01$.
+\end{itemize}
+
+The reconstruction performance ($R^2$ score) for Forward Euler, Backward Euler, and Bilinear discretisation is visualised in Figure \ref{fig:reconstruction_stack}. Empirical results demonstrate that whilst Forward Euler diverges due to instability and Backward Euler suffers from severe artificial damping, the Bilinear transform uniquely preserves the system's energy. This allows it to achieve perfect reconstruction ($R^2=1.0$) by maintaining stability without sacrificing high-frequency signal fidelity.
+
+\begin{figure}[htbp]
+    \centering
+    % N = 64
+    \begin{subfigure}[b]{1.0\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{imgs/gbt_lag_64.png}
+        %\caption{$N=64$} % Optional: Add sub-captions if needed
+    \end{subfigure}
+    
+    \vspace{0.2cm} % Slightly reduced spacing for compactness
+    
+    % N = 128
+    \begin{subfigure}[b]{1.0\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{imgs/gbt_lag_128.png}
+        %\caption{$N=128$}
+    \end{subfigure}
+    
+    \vspace{0.2cm}
+    
+    % N = 256
+    \begin{subfigure}[b]{1.0\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{imgs/gbt_lag_256.png}
+        %\caption{$N=256$}
+    \end{subfigure}
+    
+    \caption{\textbf{Memory Reconstruction Task.} Comparison of discretisation methods across increasing state dimensions $N$. The blue dashed line represents the model's reconstruction of the grey input signal.}
+    \label{fig:reconstruction_stack}
+\end{figure}
+
+Although these empirical results favor the Bilinear method, visual inspection alone is insufficient. We require a mathematical ground truth to quantify the approximation error. We now turn to the derivation of the \textbf{Exact Solution} under the Zero-Order Hold (ZOH) assumption to benchmark each discretisation method.
+
+
+
+
+\subsection{The Exact Solution (ZOH)}
+\label{sec:exact_zoh}
+
+To mathematically benchmark the approximation methods, we derive the \textbf{Exact Solution} of the linear ODE. This serves as the third and final derivation path.
+
+Recall the continuous ODE:
+\begin{equation} \label{eq:exact_ode}
+    \dot{x}(t) = A x(t) + B u(t)
+\end{equation}
+Using the integrating factor $e^{-At}$, we can solve this differential equation analytically over the interval $[t, t+\Delta t]$. We proceed by integrating both sides:
+\begin{align}
+    \frac{d}{dt} (e^{-At} x(t)) &= e^{-At} B u(t) \label{eq:integrating_factor} \\
+    \int_{t}^{t+\Delta t} \frac{d}{d\tau} (e^{-A\tau} x(\tau)) \, d\tau &= \int_{t}^{t+\Delta t} e^{-A\tau} B u(\tau) \, d\tau \notag \\
+    e^{-A(t+\Delta t)} x(t+\Delta t) - e^{-At} x(t) &= \int_{t}^{t+\Delta t} e^{-A\tau} B u(\tau) \, d\tau \label{eq:integrated_form}
+\end{align}
+Multiplying by $e^{A(t+\Delta t)}$ isolates the future state:
+\begin{equation} \label{eq:isolated_state}
+    x(t+\Delta t) = \underbrace{e^{A\Delta t}}_{\overline{A}} x(t) + \int_{t}^{t+\Delta t} e^{A(t+\Delta t - \tau)} B u(\tau) \, d\tau
+\end{equation}
+
+To solve the integral involving the input $u(\tau)$, we apply the \textbf{Zero-Order Hold (ZOH) assumption}: the input is piecewise constant between sample steps ($u(\tau) = u_k$ for $\tau \in [t, t+\Delta t]$).
+This allows us to factor $B u_k$ out of the integral. Defining $\alpha = t+\Delta t - \tau$, we obtain:
+\begin{equation} \label{eq:zoh_result}
+    x_{k+1} = e^{A\Delta t} x_k + \left( \int_{0}^{\Delta t} e^{A\alpha} \, d\alpha \right) B u_k
+\end{equation}
+Thus, the \textbf{Exact discretisation matrix} is the matrix exponential:
+\begin{equation} \label{eq:exact_matrix}
+    \overline{A}_{\text{exact}} = e^{A\Delta t}
+\end{equation}
+
+\subsection{Comparisons via Taylor Expansion}
+\label{sec:taylor_expansion}
+
+To theoretically justify the preference for the Bilinear method (and its adoption in architectures such as LSSL), we compare the Taylor series expansions of the discretised state transition matrices $\overline{A}$.
+
+\subsubsection{Summary of Discretisation Matrices}
+First, we state the state transition matrix $\overline{A}$ derived from each method. For algebraic convenience, we define $z = A \Delta t$. The transition matrices are:
+\begin{itemize}
+    \item \textbf{Exact Solution (ZOH):} $\overline{A}_{\text{exact}} = e^z$.
+    \item \textbf{Forward Euler:} $\overline{A}_{\text{FE}} = I + z$.
+    \item \textbf{Backward Euler:} $\overline{A}_{\text{BE}} = (I - z)^{-1}$.
+    \item \textbf{Bilinear (Tustin):} $\overline{A}_{\text{Bil}} = \left( I - \frac{1}{2}z \right)^{-1} \left( I + \frac{1}{2}z \right)$.
+\end{itemize}
+
+\subsubsection{Order of Error Analysis}
+We now expand these matrices with respect to $z$ to observe their approximation fidelity relative to the Exact solution.
+
+\paragraph{The Benchmark: Exact Solution}
+The Taylor series for the matrix exponential serves as our ground truth:
+\begin{equation} \label{eq:taylor_exact}
+    \overline{A}_{\text{exact}} = e^z = I + z + \frac{1}{2}z^2 + \frac{1}{6}z^3 + \mathcal{O}(z^4)
+\end{equation}
+
+\paragraph{Euler Methods (First-Order)}
+Comparing the Euler approximations to Eq.~\eqref{eq:taylor_exact}:
+\begin{align}
+    \textbf{Forward Euler:} \quad \overline{A}_{\text{FE}} &= I + z \label{eq:taylor_fe} \\
+    &\quad \textit{(Fails to capture $\frac{1}{2}z^2$. Error: $\mathcal{O}(\Delta t^2)$)} \notag  \\[1em]
+    \textbf{Backward Euler:} \quad \overline{A}_{\text{BE}} &= (I - z)^{-1} = I + z + \mathbf{1}z^2 + \dots \label{eq:taylor_be} \\
+    &\quad \textit{(Coefficient mismatch: $1.0$ vs $0.5$ at $z^2$ causes damping)} \notag 
+\end{align}
+
+\paragraph{Bilinear / Trapezoidal (Second-Order)}
+We use the Neumann series expansion $(I - X)^{-1} \approx I + X + X^2$, setting $X = \frac{1}{2}z$:
+\begin{align}
+    \overline{A}_{\text{Bil}} &= \underbrace{\left( I + \frac{1}{2}z + \frac{1}{4}z^2 + \dots \right)}_{\text{Inverse Part}} \left( I + \frac{1}{2}z \right) \notag \\
+    &= \left(I + \frac{1}{2}z\right) + \frac{1}{2}z\left(I + \frac{1}{2}z\right) + \frac{1}{4}z^2\left(I + \frac{1}{2}z\right) + \mathcal{O}(z^3) \notag \\
+    &= I + z + \left( \frac{1}{4} + \frac{1}{4} \right)z^2 + \mathcal{O}(z^3) \notag \\
+    &= I + z + \frac{1}{2}z^2 + \mathcal{O}(z^3) \label{eq:taylor_bilinear}
+\end{align}
+\textbf{Analysis:} The Bilinear method matches the Exact expansion \textbf{exactly up to the second-order term} ($z^2$).
+
+\subsubsection{Conclusion}
+This derivation theoretically confirms that Bilinear discretisation is a \textbf{second-order accurate} method ($\mathcal{O}(\Delta t^3)$ local error), whereas Euler methods are only first-order accurate. This explains the superior signal reconstruction capabilities observed in the empirical tasks.
+
+
+
+
+
+\section{DPLR for Matrix Inversion}\label{app:dplr}
+
+The Linear State-Space Layer (LSSL) framework enables parallel training by rewriting the sequential state-space recurrence as a global convolution. Concretely, given continuous-time parameters $(\mathbf{A},\mathbf{B},\mathbf{C})$ and a step size $\Delta$, the goal is to construct the discrete convolution kernel $\bar{\mathbf{K}}=\{\mathbf{K}_m\}_{m\ge 0}$.
+
+\paragraph{From the LSSL convolution kernel to a resolvent.}
+Consider the continuous-time SSM
+\[
+\dot{x}(t)=\mathbf{A}x(t)+\mathbf{B}u(t),\qquad y(t)=\mathbf{C}x(t),
+\]
+whose impulse response is $k(t)=\mathbf{C}e^{t\mathbf{A}}\mathbf{B}$. After discretisation with step size $\Delta$, we obtain a discrete-time system with matrices $(\bar{\mathbf{A}},\bar{\mathbf{B}})$ and an induced convolution
+\[
+y_n=\sum_{m\ge 0} \mathbf{K}_m\,u_{n-m},\qquad \mathbf{K}_m=\mathbf{C}\,\bar{\mathbf{A}}^{\,m}\bar{\mathbf{B}}.
+\]
+Directly forming $\bar{\mathbf{A}}^{\,m}$ is expensive. Instead, we package the entire sequence $\{\mathbf{K}_m\}$ via its $z$-transform (generating function)
+\[
+\hat{\mathbf{K}}(z)\;\triangleq\;\sum_{m\ge 0}\mathbf{K}_m z^m
+= \mathbf{C}\Big(\sum_{m\ge 0}(\bar{\mathbf{A}}z)^m\Big)\bar{\mathbf{B}}
+= \mathbf{C}\,(\mathbf{I}-z\bar{\mathbf{A}})^{-1}\bar{\mathbf{B}},
+\]
+where we used the matrix geometric series $\sum_{m\ge 0}(\bar{\mathbf{A}}z)^m=(\mathbf{I}-z\bar{\mathbf{A}})^{-1}$ (for $|z|$ sufficiently small).
+Therefore, computing the convolution kernel reduces to evaluating a \emph{resolvent}-type inverse $(\mathbf{I}-z\bar{\mathbf{A}})^{-1}$ (equivalently $(z^{-1}\mathbf{I}-\bar{\mathbf{A}})^{-1}$ up to the scalar factor $z^{-1}$).
+
+\paragraph{From $(\mathbf{I}-z\bar{\mathbf{A}})^{-1}$ to $\big(\alpha(z)\mathbf{I}-\mathbf{A}\big)^{-1}$ in S4.}
+S4 adopts the bilinear (Tustin) discretisation, which expresses the discrete transition in terms of the original continuous-time matrix $\mathbf{A}$:
+\[
+\bar{\mathbf{A}}=(\mathbf{I}-\tfrac{\Delta}{2}\mathbf{A})^{-1}(\mathbf{I}+\tfrac{\Delta}{2}\mathbf{A}),\qquad
+\bar{\mathbf{B}}=(\mathbf{I}-\tfrac{\Delta}{2}\mathbf{A})^{-1}\Delta\,\mathbf{B}.
+\]
+Substituting this $\bar{\mathbf{A}}$ into the resolvent $(\mathbf{I}-z\bar{\mathbf{A}})^{-1}$ and simplifying yields
+\[
+(\mathbf{I}-z\bar{\mathbf{A}})^{-1}
+= (\mathbf{I}-\tfrac{\Delta}{2}\mathbf{A})\Big(\alpha(z)\mathbf{I}-\mathbf{A}\Big)^{-1},
+\]
+where the scalar mapping
+\[
+\alpha(z)\;\triangleq\;\frac{2}{\Delta}\,\frac{1-z}{1+z}
+\]
+depends only on $z$ and $\Delta$.
+Hence, kernel generation ultimately requires evaluating the continuous-time resolvent
+\begin{equation}\label{eq:resolvent}
+\big(\alpha(z)\mathbf{I}-\mathbf{A}\big)^{-1},
+\end{equation}
+
+In S4, the resolvent is evaluated at the scalar argument $\alpha(z)$ arising from the bilinear transform. 
+For the remainder of this appendix, we will treat this scalar argument as a free complex parameter and simplify notation by writing
+\[
+\zeta \;\triangleq\; \alpha(z),
+\]
+so that the core object becomes the generic resolvent $(\zeta\mathbf{I}-\mathbf{A})^{-1}$. 
+For readability, we will subsequently drop the $\zeta$ and denote this parameter by $z$, i.e.,
+\[
+(\alpha(z)\mathbf{I}-\mathbf{A})^{-1}\;\equiv\; (z\mathbf{I}-\mathbf{A})^{-1},
+\]
+with the understanding that this $z$ stands for the scalar input to the resolvent (not necessarily the original $z$-transform variable).
+
+To illustrate how the DPLR/NPLR structure reduces this cost, we now unpack the algebra step-by-step (and, for intuition, we will later show a small $N=3$ instance).
+
+
+\subsection{General Matrix Inversion and \texorpdfstring{$\mathcal{O}(N^3)$}{O(N^3)}}
+\label{sec:general_inversion}
+
+Consider a generic dense symmetric state matrix $\mathbf{M} \in \mathbb{R}^{3\times3}$, initialised as:
+\begin{equation}\label{eq:matrix_example}
+    \mathbf{M} = \begin{bmatrix}
+    2 & 1 & 1 \\
+    1 & 2 & 1 \\
+    1 & 1 & 2
+    \end{bmatrix}
+\end{equation}
+Computing $\mathbf{M}^{-1}$ typically requires Gaussian elimination. This process transforms $\mathbf{M}$ into the Identity matrix $\mathbf{I}$ through a sequence of row operations; applying these same operations to $\mathbf{I}$ yields $\mathbf{M}^{-1}$.
+
+We proceed by constructing the \textbf{augmented matrix} $[\mathbf{M}|\mathbf{I}]$:
+\begin{equation}
+    [\mathbf{M}|\mathbf{I}] = \left[
+    \begin{array}{ccc|ccc}
+    2 & 1 & 1 & 1 & 0 & 0 \\
+    1 & 2 & 1 & 0 & 1 & 0 \\
+    1 & 1 & 2 & 0 & 0 & 1
+    \end{array}
+    \right]
+\end{equation}
+
+\subsubsection{Forward Elimination (Gaussian Steps)}
+Our goal is to introduce zeros below the main diagonal to create an upper triangular matrix.
+First, we eliminate the entries below the first pivot ($M_{1,1}=2$). We subtract half of Row 1 ($R_1$) from Row 2 ($R_2$) and Row 3 ($R_3$):
+\begin{align*}
+    R_2 &\leftarrow R_2 - 0.5 R_1 \\
+    R_3 &\leftarrow R_3 - 0.5 R_1
+\end{align*}
+This updates the entire row, including the augmented side:
+\begin{equation}
+    \left[
+    \begin{array}{ccc|ccc}
+    2 & 1 & 1 & 1 & 0 & 0 \\
+    0 & 1.5 & 0.5 & -0.5 & 1 & 0 \\
+    0 & 0.5 & 1.5 & -0.5 & 0 & 1
+    \end{array}
+    \right]
+\end{equation}
+Next, we eliminate the entry below the second pivot ($M_{2,2}=1.5$). We subtract $\frac{1}{3}$ of Row 2 from Row 3 ($0.5 / 1.5 = 1/3$):
+\begin{equation*}
+    R_3 \leftarrow R_3 - \frac{1}{3} R_2
+\end{equation*}
+This yields the upper triangular form:
+\begin{equation}
+    \left[
+    \begin{array}{ccc|ccc}
+    2 & 1 & 1 & 1 & 0 & 0 \\
+    0 & 1.5 & 0.5 & -0.5 & 1 & 0 \\
+    0 & 0 & 1.33 & -0.33 & -0.33 & 1
+    \end{array}
+    \right]
+\end{equation}
+
+\subsubsection{Back Substitution (Jordan Steps)}
+Now that the system is triangular, we normalise the pivots to 1 and eliminate the entries above the diagonal.
+
+Starting from the bottom row ($R_3$), we divide by the pivot ($1.33$ or $4/3$) to isolate the identity component:
+\begin{equation}
+    R_3 \leftarrow R_3 \times \frac{3}{4} \implies [0, 0, 1 \mid -0.25, -0.25, 0.75]
+\end{equation}
+We then substitute $R_3$ upwards to eliminate the entries above it in $R_2$ and $R_1$, and finally normalise $R_2$ and $R_1$. After performing these operations for all rows, the left side becomes the Identity matrix, and the right side becomes $\mathbf{M}^{-1}$:
+
+\begin{equation}
+    \mathbf{M}^{-1} = \begin{bmatrix}
+    0.75 & -0.25 & -0.25 \\
+    -0.25 & 0.75 & -0.25 \\
+    -0.25 & -0.25 & 0.75
+    \end{bmatrix}
+\end{equation}
+
+\subsubsection{Complexity Analysis}
+Notice that every row operation ($R_i \leftarrow R_i - c R_j$) requires updating \textbf{every column} in the row.
+\begin{itemize}
+    \item For a matrix of size $N$, there are $N$ rows.
+    \item Each row elimination requires $\approx N$ multiplications and subtractions.
+    \item This process is repeated $N$ times for the columns.
+\end{itemize}
+The total operation count scales as $\approx \frac{2}{3}N^3$. For standard state dimensions (e.g., $N=64$), this cost is $2.6 \times 10^5$ operations. Crucially, the LSSL framework requires this evaluation at every frequency step $L$. The resulting total complexity of $\mathcal{O}(LN^3)$ renders this naive approach computationally infeasible for long sequences (e.g., $L \geq 16,000$).
+
+
+
+
+
+\subsection{The Ideal Case: Matrix Inversion for Diagonal Matrices and \texorpdfstring{$\mathcal{O}(N)$}{O(N)}}
+\label{sec:ideal_case}
+
+Consider the scenario where the state matrix is strictly diagonal. Let $\mathbf{\Lambda}$ be a diagonal matrix:
+\begin{equation} \label{eq:diagonal_matrix}
+    \mathbf{\Lambda} = \begin{bmatrix}
+    1 & 0 & 0 \\
+    0 & 2 & 0 \\
+    0 & 0 & 3
+    \end{bmatrix}
+\end{equation}
+The inversion of a diagonal matrix is trivial; one simply computes the reciprocal of the diagonal elements:
+\begin{equation} \label{eq:diagonal_inverse}
+    \mathbf{\Lambda}^{-1} = \begin{bmatrix}
+    1 & 0 & 0 \\
+    0 & 1/2 & 0 \\
+    0 & 0 & 1/3
+    \end{bmatrix}
+\end{equation}
+
+\paragraph{Complexity Analysis}
+This operation requires exactly $N$ divisions, resulting in $\mathcal{O}(N)$ complexity. While computationally ideal, diagonal matrices imply that the state variables are independent, severely limiting the model's capacity to capture complex interactions or memory.
+
+\subsection{Bridging the Gap: Structured Inversion via DPLR}
+\label{sec:dplr_structure}
+
+To circumvent the cubic bottleneck while retaining expressivity, we constrain the state matrix to the \textbf{Diagonal Plus Low-Rank (DPLR)} class. This structure admits a closed-form inverse via the Woodbury Matrix Identity, reducing the problem to simple vector arithmetic.
+
+We observe that the matrix $\mathbf{M}$ from Section \ref{sec:general_inversion} decomposes into a diagonal term $\mathbf{\Lambda}$ and a symmetric rank-1 correction derived from the vector $\mathbf{p}$:
+
+\begin{equation} \label{eq:dplr_decomposition}
+    \mathbf{M} = \underbrace{\begin{bmatrix}
+    1 & 0 & 0 \\
+    0 & 1 & 0 \\
+    0 & 0 & 1
+    \end{bmatrix}}_{\mathbf{\Lambda}} + \underbrace{\begin{bmatrix}
+    1 \\ 1 \\ 1
+    \end{bmatrix}}_{\mathbf{p}} \underbrace{\begin{bmatrix}
+    1 & 1 & 1
+    \end{bmatrix}}_{\mathbf{p}^T}
+\end{equation}
+
+where $\mathbf{\Lambda} = \mathbf{I}$ and $\mathbf{p} = [1, 1, 1]^T$. The Woodbury identity for a symmetric rank-1 correction is given by:
+
+\begin{equation} \label{eq:woodbury_identity}
+    (\mathbf{\Lambda} + \mathbf{p}\mathbf{p}^T)^{-1} = \mathbf{\Lambda}^{-1} - \frac{\mathbf{\Lambda}^{-1}\mathbf{p}\mathbf{p}^T\mathbf{\Lambda}^{-1}}{1 + \mathbf{p}^T\mathbf{\Lambda}^{-1}\mathbf{p}}
+\end{equation}
+
+Applying this directly to our matrix $\mathbf{M}$, the computation proceeds as follows:
+
+\begin{enumerate}
+    \item \textbf{Diagonal Inversion:} Computing $\mathbf{\Lambda}^{-1}$ requires only element-wise division. Here, $\mathbf{\Lambda}^{-1} = \mathbf{I}$ ($\mathcal{O}(N)$).
+    
+    \item \textbf{Matrix-Vector Product:} We compute the intermediate vector $\mathbf{w} = \mathbf{\Lambda}^{-1}\mathbf{p}$. Since $\mathbf{\Lambda}^{-1}$ is identity, $\mathbf{w} = [1, 1, 1]^T$ ($\mathcal{O}(N)$).
+    
+    \item \textbf{Scalar Reduction:} The denominator term is computed as a dot product: $k = 1 + \mathbf{p}^T\mathbf{w} = 1 + 3 = 4$ ($\mathcal{O}(N)$).
+    
+    \item \textbf{Low-Rank Update:} The correction term is derived via the outer product of $\mathbf{w}$:
+    \begin{equation}
+        \frac{\mathbf{w}\mathbf{w}^T}{k} = \frac{1}{4}\begin{bmatrix}
+        1 & 1 & 1 \\
+        1 & 1 & 1 \\
+        1 & 1 & 1
+        \end{bmatrix} = \begin{bmatrix}
+        0.25 & 0.25 & 0.25 \\
+        0.25 & 0.25 & 0.25 \\
+        0.25 & 0.25 & 0.25
+        \end{bmatrix}
+    \end{equation}
+    
+    \item \textbf{Final Assembly}:
+    \begin{equation}
+        \mathbf{M}^{-1} = \mathbf{\Lambda}^{-1} - \text{Correction} = \begin{bmatrix}
+        0.75 & -0.25 & -0.25 \\
+        -0.25 & 0.75 & -0.25 \\
+        -0.25 & -0.25 & 0.75
+        \end{bmatrix}
+    \end{equation}
+\end{enumerate}
+
+This derivation recovers the exact result of the Gaussian elimination but reduces the arithmetic complexity from $\mathcal{O}(N^3)$ to $\mathcal{O}(N)$.
+
+
+
+\subsection{Extend DPLR to HiPPO Matrix}
+\label{sec:hippo_intro}
+
+The previous section demonstrated that if a matrix has the structure $\mathbf{M}=\mathbf{\Lambda}+\mathbf{p}\mathbf{p}^T$ (Diagonal Plus Low-Rank), it admits computationally efficient inversion. However, the state matrix $\mathbf{A}$ in S4 is derived from the \textbf{HiPPO} (High-order Polynomial Projection Operators) framework to optimally compress history. We now follow the derivation from S4 and show how the HiPPO-LegS matrix can be converted into a \textbf{Normal Plus Low-Rank} form, and hence into a DPLR matrix after a unitary change of basis.
+
+\subsubsection{The Definition of the HiPPO-LegS Matrix}
+We focus on the HiPPO-LegS (Legendre Scaled) matrix, the default initialisation for S4. It is defined element-wise as:
+\begin{equation} \label{eq:hippo_def}
+    A_{nk} = \begin{cases} 
+    -(2n+1)^{1/2}(2k+1)^{1/2} & \text{if } n > k \\
+    -(n+1) & \text{if } n = k \\
+    0 & \text{if } n < k 
+    \end{cases}
+\end{equation}
+A naive inspection reveals that $\mathbf{A}$ is a \textbf{dense, lower-triangular matrix}. Standard inversion would incur the prohibitively expensive $\mathcal{O}(N^3)$ cost discussed in Section \ref{sec:general_inversion}.
+
+\subsubsection{Revealing the Hidden Structure (NPLR)}
+Although the matrix appears strictly triangular, S4 observes that adding a specific rank-1 term reveals a hidden \emph{normal} structure. Let $\mathbf{p}\in\mathbb{R}^N$ with entries
+\begin{equation}
+    p_n = \sqrt{2n+1}.
+\end{equation}
+Define the rank-1 update
+\begin{equation}\label{eq:Ahat_def}
+    \widehat{\mathbf{A}} \;\triangleq\; \mathbf{A} + \frac{1}{2}\mathbf{p}\mathbf{p}^T.
+\end{equation}
+We now define a strictly skew-symmetric matrix $\mathbf{S}$ element-wise by
+\begin{equation}\label{eq:S_def}
+S_{nk}=
+\begin{cases}
+\frac{1}{2}p_np_k, & n<k,\\
+0, & n=k,\\
+-\frac{1}{2}p_np_k, & n>k.
+\end{cases}
+\end{equation}
+By construction, $\mathbf{S}^T=-\mathbf{S}$. A direct entry-wise check shows that $\widehat{\mathbf{A}}$ becomes ``constant plus skew'':
+\begin{equation}\label{eq:Ahat_decomp}
+    \widehat{\mathbf{A}} = -\frac{1}{2}\mathbf{I} - \mathbf{S}.
+\end{equation}
+Equivalently, substituting \eqref{eq:Ahat_def} into \eqref{eq:Ahat_decomp} yields the NPLR decomposition of the original HiPPO matrix:
+\begin{equation} \label{eq:nplr_decomp}
+    \mathbf{A} = -\mathbf{S} - \frac{1}{2}\mathbf{p}\mathbf{p}^T - \frac{1}{2}\mathbf{I}.
+\end{equation}
+
+\begin{align}\label{eq:matrix_expansion_A}
+\underbrace{
+\begin{bmatrix}
+\bullet & 0 & \cdots \\
+-p_1p_0 & \bullet & \cdots \\
+\vdots & \vdots & \ddots
+\end{bmatrix}
+}_{\mathbf{A}\text{ (Lower Triangular)}}
+=
+-\;
+\underbrace{
+\begin{bmatrix}
+0 & -\frac12 p_0p_1 & \cdots \\
++\frac12 p_1p_0 & 0 & \cdots \\
+\vdots & \vdots & \ddots
+\end{bmatrix}
+}_{\mathbf{S} \text{ (Skew-Symmetric)}}
+\;-\;
+\frac12\underbrace{
+\begin{bmatrix}
+p_0^2 & p_0p_1 & \cdots \\
+p_1p_0 & p_1^2 & \cdots \\
+\vdots & \vdots & \ddots
+\end{bmatrix}
+}_{\mathbf{p}\mathbf{p}^T \text{ (Dense Symmetric)}}
+\;-\;
+\frac12\underbrace{
+\begin{bmatrix}
+1 & 0 & \cdots \\
+0 & 1 & \cdots \\
+\vdots & \vdots & \ddots
+\end{bmatrix}
+}_{\mathbf{I}}
+\end{align}
+
+We verify \eqref{eq:Ahat_decomp} (and hence \eqref{eq:nplr_decomp}) by checking the three cases:
+\begin{itemize}
+    \item \textbf{Upper Triangle ($n<k$):} $A_{nk}=0$, while $\left(\frac{1}{2}\mathbf{p}\mathbf{p}^T\right)_{nk}=+\frac{1}{2}p_np_k$, so $\widehat{A}_{nk}=+\frac{1}{2}p_np_k$. From \eqref{eq:S_def}, $S_{nk}=+\frac{1}{2}p_np_k$, so $(-\frac{1}{2}\mathbf{I}-\mathbf{S})_{nk}=-S_{nk}=+\frac{1}{2}p_np_k$ matches.
+    \item \textbf{Lower Triangle ($n>k$):} $A_{nk}=-p_np_k$, while $\left(\frac{1}{2}\mathbf{p}\mathbf{p}^T\right)_{nk}=+\frac{1}{2}p_np_k$, so $\widehat{A}_{nk}=-\frac{1}{2}p_np_k$. From \eqref{eq:S_def}, $S_{nk}=-\frac{1}{2}p_np_k$, so $(-\frac{1}{2}\mathbf{I}-\mathbf{S})_{nk}=-S_{nk}=-\frac{1}{2}p_np_k$ matches.
+    \item \textbf{Diagonal ($n=k$):} $\widehat{A}_{nn}=A_{nn}+\frac{1}{2}p_n^2=-(n+1)+\frac{1}{2}(2n+1)=-\frac{1}{2}$, while $(-\frac{1}{2}\mathbf{I}-\mathbf{S})_{nn}=-\frac{1}{2}$ since $S_{nn}=0$.
+\end{itemize}
+
+
+\subsubsection{Unitary Diagonalisation}
+
+\paragraph{Normality and unitary diagonalisation.}
+Since $\mathbf{S}^T=-\mathbf{S}$, we have $\mathbf{S}\mathbf{S}^T=\mathbf{S}^T\mathbf{S}$ and thus $\mathbf{S}$ is normal.%
+\footnote{Equivalently, one may work over $\mathbb{C}$ and use the skew-Hermitian relation $\mathbf{S}^*=-\mathbf{S}$, which also implies normality.}
+By the spectral theorem for normal matrices, there exists a unitary matrix $\mathbf{V}\in\mathbb{C}^{N\times N}$ ($\mathbf{V}^*\mathbf{V}=\mathbf{I}$) that diagonalises $\mathbf{S}$:
+\begin{equation}\label{eq:S_diag}
+    \mathbf{S} = \mathbf{V}\mathbf{\Lambda}\mathbf{V}^*.
+\end{equation}
+
+\paragraph{Why a similarity transform?}
+Our ultimate goal is to evaluate resolvents of the form $(z\mathbf{I}-\mathbf{A})^{-1}$. Diagonalising the normal component $\mathbf{S}$ suggests working in the $\mathbf{V}$-basis, where the normal part becomes diagonal, reducing the core computation to a diagonal-plus-low-rank inverse amenable to Woodbury. Because $\mathbf{V}$ is unitary, this change of basis is numerically stable (it preserves norms) and does not alter the underlying operator.
+
+\paragraph{Definition (conjugation).}
+We define the conjugated matrix
+\begin{equation}\label{eq:A_tilde_def}
+\tilde{\mathbf{A}} \;\triangleq\; \mathbf{V}^*\mathbf{A}\mathbf{V}.
+\end{equation}
+This definition is natural because it implies the exact identity
+\begin{equation}\label{eq:A_factorisation}
+\mathbf{A} = \mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^*,
+\end{equation}
+obtained by inserting $\mathbf{I}=\mathbf{V}\mathbf{V}^*$ on both sides:
+$\mathbf{A}=(\mathbf{V}\mathbf{V}^*)\mathbf{A}(\mathbf{V}\mathbf{V}^*)=\mathbf{V}(\mathbf{V}^*\mathbf{A}\mathbf{V})\mathbf{V}^*$.
+
+\paragraph{Inverse under conjugation.}
+For any invertible matrix $\mathbf{M}$ and any unitary $\mathbf{V}$,
+\begin{equation}\label{eq:inverse_conjugation}
+(\mathbf{V}\mathbf{M}\mathbf{V}^*)^{-1} = \mathbf{V}\mathbf{M}^{-1}\mathbf{V}^*,
+\end{equation}
+which follows by direct multiplication:
+$(\mathbf{V}\mathbf{M}\mathbf{V}^*)(\mathbf{V}\mathbf{M}^{-1}\mathbf{V}^*)=\mathbf{V}\mathbf{I}\mathbf{V}^*=\mathbf{I}$.
+
+\paragraph{Corollary (resolvent under conjugation).}
+Recall from \eqref{eq:A_factorisation} and that $\mathbf{V}$ is unitary.
+Then
+\begin{align}
+z\mathbf{I}-\mathbf{A}
+&= z\mathbf{I}-\mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^* \notag\\
+&= z(\mathbf{V}\mathbf{V}^*)-\mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^* \qquad (\text{since } \mathbf{I}=\mathbf{V}\mathbf{V}^*) \notag\\
+&= \mathbf{V}(z\mathbf{I})\mathbf{V}^*-\mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^* \notag\\
+&= \mathbf{V}\bigl(z\mathbf{I}-\tilde{\mathbf{A}}\bigr)\mathbf{V}^*. \label{eq:resolvent_conjugation_step1}
+\end{align}
+Finally, applying the inverse-under-conjugation identity \eqref{eq:inverse_conjugation} with $\mathbf{M}=z\mathbf{I}-\tilde{\mathbf{A}}$ yields
+\begin{equation}\label{eq:resolvent_conjugation}
+(z\mathbf{I}-\mathbf{A})^{-1}
+=\bigl(\mathbf{V}(z\mathbf{I}-\tilde{\mathbf{A}})\mathbf{V}^*\bigr)^{-1}
+=\mathbf{V}(z\mathbf{I}-\tilde{\mathbf{A}})^{-1}\mathbf{V}^*.
+\end{equation}
+
+
+
+
+so it suffices to compute the resolvent of the conjugated matrix $\tilde{\mathbf{A}}$.
+
+\paragraph{Obtaining the DPLR form.}
+Substituting \eqref{eq:nplr_decomp} gives
+\begin{align}
+    \tilde{\mathbf{A}}
+    &= \mathbf{V}^*\left(-\mathbf{S}-\frac{1}{2}\mathbf{p}\mathbf{p}^T-\frac{1}{2}\mathbf{I}\right)\mathbf{V} \notag\\
+    &= \underbrace{-\mathbf{V}^*\mathbf{S}\mathbf{V}}_{\text{Term 1}} \;-\;
+       \underbrace{\frac{1}{2}\mathbf{V}^*(\mathbf{p}\mathbf{p}^T)\mathbf{V}}_{\text{Term 2}} \;-\;
+       \underbrace{\frac{1}{2}\mathbf{I}}_{\text{Term 3}}.
+\end{align}
+Analyzing the terms:
+\begin{itemize}
+    \item \textbf{Term 1:} From \eqref{eq:S_diag}, $\mathbf{V}^*\mathbf{S}\mathbf{V}=\mathbf{\Lambda}$ (diagonal). Hence
+    \[
+    -\mathbf{V}^*\mathbf{S}\mathbf{V} = -\mathbf{\Lambda}.
+    \]
+    \item \textbf{Term 2:} Define $\tilde{\mathbf{p}}=\mathbf{V}^*\mathbf{p}$. Since $\mathbf{p}\in\mathbb{R}^N$, we have $\mathbf{p}^T=\mathbf{p}^*$ and therefore $\mathbf{p}^T\mathbf{V}=(\mathbf{V}^*\mathbf{p})^*=\tilde{\mathbf{p}}^*$. Unitary conjugation preserves rank, and
+    \begin{equation}
+        \frac{1}{2}\mathbf{V}^*(\mathbf{p}\mathbf{p}^T)\mathbf{V}
+        = \frac{1}{2}(\mathbf{V}^*\mathbf{p})(\mathbf{p}^T\mathbf{V})
+        = \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^*,
+    \end{equation}
+    a rank-1 correction.
+    \item \textbf{Term 3:} The shift $-\frac{1}{2}\mathbf{I}$ is diagonal and does not change the diagonal-plus-low-rank structure.
+\end{itemize}
+Thus, the effective matrix is \textbf{DPLR}:
+\begin{equation}\label{eq:DPLR_Atilde}
+    \tilde{\mathbf{A}} = -\mathbf{\Lambda} - \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^* - \frac{1}{2}\mathbf{I}.
+\end{equation}
+This shows that the dense HiPPO-LegS matrix is unitarily equivalent to a diagonal matrix plus a rank-1 correction (up to a diagonal shift). Consequently, computing $(z\mathbf{I}-\mathbf{A})^{-1}$ reduces to computing $(z\mathbf{I}-\tilde{\mathbf{A}})^{-1}$ via \eqref{eq:resolvent_conjugation}, where the core inverse is diagonal-plus-rank-1 and can be evaluated in $\mathcal{O}(N)$ using Woodbury (Section~\ref{sec:dplr_structure}).
+
+
+\subsection{Closing the Loop: Evaluating the Resolvent \texorpdfstring{$(z\mathbf{I} - \mathbf{A})^{-1}$}{(zI - A)^{-1}}}
+\label{sec:resolvent_evaluation}
+
+Recall from Eq.~\eqref{eq:resolvent} that our ultimate objective is not merely to invert $\mathbf{A}$, but to evaluate the resolvent $(z\mathbf{I} - \mathbf{A})^{-1}$ to compute the convolution kernel. We can now demonstrate that the DPLR/NPLR structure derived above renders this operation computationally tractable.
+
+From Section~\ref{sec:hippo_intro}, we have the unitary change of basis $\tilde{\mathbf{A}}=\mathbf{V}^*\mathbf{A}\mathbf{V}$ with
+\begin{equation}\label{eq:Atilde_repeat}
+\tilde{\mathbf{A}} = -\mathbf{\Lambda} - \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^* - \frac{1}{2}\mathbf{I},
+\qquad
+\tilde{\mathbf{p}}=\mathbf{V}^*\mathbf{p},
+\end{equation}
+and $\mathbf{A}=\mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^*$.
+
+\subsubsection{Reducing the Resolvent to ``Diagonal + Rank-1''}
+Using the unitary invariance identity $(\mathbf{V}\mathbf{M}\mathbf{V}^*)^{-1}=\mathbf{V}\mathbf{M}^{-1}\mathbf{V}^*$, we obtain
+\begin{align}
+(z\mathbf{I}-\mathbf{A})^{-1}
+&= \left(z\mathbf{I}-\mathbf{V}\tilde{\mathbf{A}}\mathbf{V}^*\right)^{-1} \notag\\
+&= \mathbf{V}\left(z\mathbf{I}-\tilde{\mathbf{A}}\right)^{-1}\mathbf{V}^*. \label{eq:resolvent_unitary_pullout}
+\end{align}
+Substituting \eqref{eq:Atilde_repeat} gives the core form
+\begin{align}
+\left(z\mathbf{I}-\tilde{\mathbf{A}}\right)^{-1}
+&= \left(z\mathbf{I} + \mathbf{\Lambda} + \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^* + \frac{1}{2}\mathbf{I}\right)^{-1} \notag\\
+&= \underbrace{\left(\left(\left(z+\frac{1}{2}\right)\mathbf{I}+\mathbf{\Lambda}\right) + \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^*\right)^{-1}}_{\text{Diagonal + rank-1}}. \label{eq:core_calculation}
+\end{align}
+Therefore,
+\begin{equation}\label{eq:resolvent_final_form}
+(z\mathbf{I}-\mathbf{A})^{-1}
+= \mathbf{V}\left(\left(\left(z+\frac{1}{2}\right)\mathbf{I}+\mathbf{\Lambda}\right) + \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^*\right)^{-1}\mathbf{V}^*.
+\end{equation}
+
+The term inside the brackets is strictly the inverse of a diagonal matrix plus a rank-1 correction, matching the form required for the Woodbury identity and enabling $\mathcal{O}(N)$ evaluation per $z$.
+
+\subsubsection{The Computational Advantage}
+Let
+\begin{equation}
+\mathbf{D} \;\triangleq\; \left(z+\frac{1}{2}\right)\mathbf{I}+\mathbf{\Lambda}.
+\end{equation}
+Since $\mathbf{\Lambda}$ is diagonal and $z$ is a scalar, $\mathbf{D}$ is strictly diagonal. The problem has now been reduced to
+\begin{equation}\label{eq:woodbury_target_here}
+\left(\mathbf{D} + \frac{1}{2}\tilde{\mathbf{p}}\tilde{\mathbf{p}}^*\right)^{-1},
+\end{equation}
+which is exactly the ``diagonal + rank-1'' case solved in Section~\ref{sec:dplr_structure}.
+
+By applying the Woodbury Matrix Identity, we avoid explicit matrix inversion:
+\begin{enumerate}
+    \item \textbf{Diagonal Inversion:} We compute $\mathbf{D}^{-1}=\mathrm{diag}\!\left(1/\left(z+\frac{1}{2}+\lambda_i\right)\right)$. This is $\mathcal{O}(N)$.
+    \item \textbf{Woodbury Correction:} We apply Eq.~\eqref{eq:woodbury_identity} with $\mathbf{D}^{-1}$ and $\tilde{\mathbf{p}}$, which involves only vector dot products and scaling and is $\mathcal{O}(N)$.
+\end{enumerate}
+
+Thus, evaluating the core resolvent term \eqref{eq:core_calculation} is reduced from a cubic $\mathcal{O}(N^3)$ operation to a linear $\mathcal{O}(N)$ operation (per $z$), and the full resolvent is recovered via the surrounding unitary transforms in \eqref{eq:resolvent_final_form}.
+
+\subsubsection{Impact on Global Complexity}
+The $\mathcal{O}(N)$ per-parameter resolvent evaluation derived above is a prerequisite for the overall efficiency of S4: it reduces the core linear-algebraic bottleneck from cubic to linear time for each resolvent query.
+In practice, constructing the full convolution kernel requires evaluating this resolvent at many complex parameters. Appendix~C will introduce how S4 organises these evaluations and accelerates them using frequency-domain structure, ultimately yielding the $\mathcal{O}(N\log N)$ kernel computation.
+\section{The Evolution of the State Matrix $A$}
+
+While Appendix A established the necessity of time-variant parameters for selective memory, it is crucial to understand the structural evolution of the state matrix $A$. The matrix $A$ governs the internal memory dynamics—determining how past information is retained, mixed, or forgotten.
+
+The development of modern SSMs can be traced through the structural changes applied to $A$ to balance expressiveness (memory capacity) with computational efficiency. This evolution follows the lineage of HiPPO, LSSL, S4, Mamba-01, and Mamba-02.
+
+\subsection{HiPPO: Optimal History Compression}
+
+The High-Order Polynomial Projection Operators (HiPPO) framework addresses the fundamental question: \textit{How can a system compress an infinite continuous history $x(t)$ into a finite hidden state $h(t)$?}
+
+HiPPO achieves this by projecting the input signal onto a basis of orthogonal polynomials (specifically, scaled Legendre polynomials). The resulting state matrix $A$ is derived mathematically to minimise the reconstruction error of the history. In the standard Legendre case (LegS), the matrix $A \in \mathbb{R}^{N \times N}$ is defined element-wise as:
+\begin{equation}
+    A_{nk} = - \begin{cases}
+        (2n+1)^{1/2}(2k+1)^{1/2} & \text{if } n > k \\
+        n+1 & \text{if } n = k \\
+        0 & \text{if } n < k
+    \end{cases}
+\end{equation}
+This results in a dense, lower-triangular matrix. While theoretically optimal for memory retention, the dense nature of $A$ makes computation expensive ($O(N^2)$ for matrix-vector multiplication), which hinders scaling to deep networks.
+
+\subsection{LSSL: Discretisation and the Bilinear Transform}
+
+The Linear State-Space Layer (LSSL) bridges the continuous HiPPO theory with discrete sequence modelling. It utilises the HiPPO matrix as an initialisation inductive bias and applies Bilinear (Tustin) discretisation to convert the continuous system into a discrete recurrence:
+\begin{equation}
+    \overline{A} = (I - \frac{\Delta}{2}A)^{-1}(I + \frac{\Delta}{2}A)
+\end{equation}
+At this stage, the system is still Linear Time Invariant (LTI). The primary contribution of LSSL is establishing the dual view of LTI SSMs: they can be trained in parallel like Convolutional Neural Networks (CNNs) and inferenced sequentially like Recurrent Neural Networks (RNNs).
+
+\subsection{S4: Diagonal Plus Low-Rank (DPLR)}
+
+The Structured State Space sequence model (S4) solves the computational bottleneck of LSSL. Inverting the matrix $(I - \frac{\Delta}{2}A)$ for a dense HiPPO matrix is computationally prohibitive ($O(N^3)$).
+
+S4 introduces the DPLR parametrisation. It proves that the HiPPO matrix can be decomposed into a Normal (diagonal) component plus a Low-Rank correction:
+\begin{equation}
+    A = \Lambda + PQ^\top
+\end{equation}
+where $\Lambda$ is diagonal and $P, Q \in \mathbb{R}^{N \times r}$ (typically $r=1$).
+
+By exploiting the Woodbury Matrix Identity, the inversion of a DPLR matrix can be reduced to inverting a diagonal matrix and a small $r \times r$ matrix. This reduces the computational complexity from $O(N^3)$ to roughly $O(N)$, allowing SSMs to scale efficiently to long sequences while retaining the memory properties of HiPPO.
+
+\subsection{Mamba-01: Time-Variant Diagonal $A$}
+
+Mamba-01 marks the transition from LTI to Selective SSMs. As discussed in Appendix A, pure LTI systems cannot perform content-aware filtering. Mamba introduces an input-dependent step size $\Delta_t$.
+
+To maintain efficiency with a time-varying system, Mamba-01 simplifies the structure of $A$ further to be purely diagonal. The complex DPLR structure is often replaced with diagonal initialisations that approximate HiPPO dynamics (e.g., $A_n = -1/2 + ni$).
+
+Under Zero-Order Hold (ZOH) discretisation, the effective discrete transition becomes time-dependent:
+\begin{equation}
+    \overline{A}_t = \exp(\Delta_t A)
+\end{equation}
+Since $\Delta_t$ depends on the input $x_t$, the system can selectively "reset" state channels (large $\Delta_t$) or "freeze" memories (small $\Delta_t$) per token.
+
+\subsection{Mamba-02: State Space Duality (SSD) and Scalar Identity}
+
+Mamba-02 addresses the hardware efficiency of SSMs on GPUs (which are optimised for large matrix multiplications) and the conceptual link to the Transformer architecture. It introduces **State Space Duality (SSD), reframing the SSM recurrence as a matrix operator $Y=MX$.
+
+For the matrix operator $M$ to be computed efficiently and resemble the Attention mechanism, Mamba-02 proposes a Scalar Identity structure for $A$:
+\begin{equation}
+    A_t = a_t I
+\end{equation}
+where $a_t$ is a scalar. When the recurrence is unrolled, the interaction between time steps $j$ and $i$ (where $j \ge i$) simplifies to:
+\begin{equation}
+    M_{ji} = (C_j^\top B_i) \cdot \prod_{k=i+1}^{j} a_k
+\end{equation}
+This reveals a direct structural mapping to Causal Linear Attention:
+\begin{itemize}
+    \item $C_j \leftrightarrow Q$ (Query)
+    \item $B_i \leftrightarrow K$ (Key)
+    \item $x_i \leftrightarrow V$ (Value)
+    \item The product of scalars $\prod a_k$ acts as a data-dependent decay mask (similar to positional encoding or attention masking).
+\end{itemize}
+This formulation allows Mamba-02 to utilise the highly optimised kernel implementations used for Attention, bridging the gap between SSMs and Transformers.
+
+
+\section{From Linear Time Invariant (LTI) to Selective State Space Models}
+
+This part of the appendix details the theoretical transition from Linear Time Invariant (LTI) systems to Time-Variant State Space Models (specifically the Mamba architecture). We utilise a simplified illustrative task—memorising London's weather pattern—to demonstrate the limitations of LTI memory and the necessity for input-dependent parametrisation.
+
+\subsection{The Limitation of LTI Systems: The London Weather Analogy}
+\label{app:lti-london-weather}
+
+To motivate the transition from \emph{linear time-invariant} (LTI) state space models (SSMs) to \emph{time-varying} SSMs (as used by Mamba-style selective mechanisms), we consider a simple sequence modelling task: retaining a memory of London's weather over a ten-day period. Let $t \in \{0,1,\dots,9\}$ denote the time step. We define:
+\begin{itemize}
+    \item $x_t$: the input at day $t$ (the observed weather/event);
+    \item $h_t$: the hidden state (the model's memory) accumulated up to day $t$;
+    \item $y_t$: the output at day $t$ (e.g.\ a decision to carry an umbrella, where $1=$ yes and $0=$ no).
+\end{itemize}
+
+\paragraph{Intuition: memory is updated by the past and the present.}
+In our hypothetical sequence, most days are rainy with occasional sunshine. At $t=5$, however, a highly salient anomaly occurs: an ``Alien Invasion''. Intuitively, the memory state $h_5$ should reflect both the accumulated context $h_4$ and the novel input $x_5$. In other words, the update should be sensitive to the \emph{content} of the new observation: mundane, repetitive inputs ought not overwrite the memory aggressively, whereas rare, high-impact inputs should be written strongly and may even diminish the relevance of previous context.
+
+\paragraph{From a generic recurrence to a linear update.}
+A general recurrent system can be written as
+\begin{equation}
+    h_t = f(h_{t-1}, x_t), \qquad y_t = g(h_t),
+\end{equation}
+where $f$ updates memory and $g$ reads out a task-specific output. The simplest choice is to assume linear functions, yielding the (scalar) recurrence
+\begin{equation}
+    h_t = a h_{t-1} + b x_t, 
+    \qquad 
+    y_t = c h_t,
+\end{equation}
+where $a,b,c$ are constants. Here, $a$ controls \emph{retention} (or forgetting), $b$ controls \emph{write strength} (how strongly the present is incorporated), and $c$ controls the \emph{readout} mapping from memory to output.
+
+\paragraph{High-dimensional state space form (LTI SSM).}
+In realistic settings, $x_t$, $h_t$, and $y_t$ are vectors. For instance, $x_t$ may include temperature, humidity, wind direction, and other features; $h_t$ may encode aggregated statistics, trends, or other latent summaries; and $y_t$ may be a prediction or a richer representation used downstream. We therefore take
+\[
+x_t, y_t \in \mathbb{R}^{d_{\text{model}}}, 
+\qquad
+h_t \in \mathbb{R}^{d_{\text{state}}},
+\]
+and write the linear state space model as
+\begin{equation}
+    h_t = A h_{t-1} + B x_t,
+    \label{eq:lti_update}
+\end{equation}
+\begin{equation}
+    y_t = C h_t,
+    \label{eq:lti_readout}
+\end{equation}
+where $A \in \mathbb{R}^{d_{\text{state}} \times d_{\text{state}}}$, $B \in \mathbb{R}^{d_{\text{state}} \times d_{\text{model}}}$, and $C \in \mathbb{R}^{d_{\text{model}} \times d_{\text{state}}}$ are fixed (time-invariant) parameters. Concretely,
+\begin{itemize}
+    \item $A$ governs how much of the previous memory $h_{t-1}$ is retained;
+    \item $B$ governs how strongly new information $x_t$ is written into memory;
+    \item $C$ governs how memory $h_t$ is mapped to the output $y_t$.
+\end{itemize}
+
+\paragraph{A key observation: LTI implies a fixed forgetting curve and fixed write strength.}
+The defining property of \eqref{eq:lti_update}--\eqref{eq:lti_readout} is that $A,B,C$ do \emph{not} depend on time or on the current input. This has an immediate consequence: the model applies the \emph{same} update rule to every day, regardless of whether the input is routine (another rainy day) or exceptional (an alien invasion).
+
+This can be made explicit by unrolling \eqref{eq:lti_update}:
+\begin{equation}
+    h_t = A^t h_0 + \sum_{k=0}^{t} A^{t-k} B x_k.
+    \label{eq:lti_unroll}
+\end{equation}
+Equation \eqref{eq:lti_unroll} shows that each past input $x_k$ influences the current memory $h_t$ through the factor $A^{t-k}$, which induces a \emph{fixed} decay profile across time steps. In informal terms: in an LTI system, the ``transparency'' (importance) of older observations fades according to a pre-determined curve set by $A$, and the strength with which each new observation is written is set by a fixed $B$.
+
+\paragraph{Why this is limiting: salience-sensitive memory cannot be expressed by fixed $(A,B,C)$.}
+The London-weather narrative highlights a mismatch between LTI memory dynamics and the demands of salient, rare events:
+\begin{itemize}
+    \item For repetitive, low-salience inputs (e.g.\ another rainy day), it is often desirable to \emph{write weakly} (avoid overwriting memory with redundant information) and to maintain a smooth, stable retention profile.
+    \item For high-salience anomalies (e.g.\ an alien invasion), one typically wants a \emph{strong write} (rapid incorporation into memory), and in some tasks a partial \emph{context reset} (reducing the influence of prior ``normal'' context that may no longer be relevant).
+\end{itemize}
+However, with fixed matrices $A$ and $B$, the model cannot selectively change its write/forget behaviour at $t=5$ without also changing its behaviour on every other day. Increasing the state dimension $d_{\text{state}}$ may increase capacity, but it does not address this core constraint: as long as the update rule remains time-invariant, the system still applies a single, global memory policy to all inputs.
+
+\paragraph{From LTI to time-varying (gated) state space models.}
+A natural resolution is to allow the state space parameters to vary with time (and, in practice, to be conditioned on the input):
+\begin{equation}
+    h_t = A_t h_{t-1} + B_t x_t,
+    \label{eq:tv_update}
+\end{equation}
+\begin{equation}
+    y_t = C_t h_t.
+    \label{eq:tv_readout}
+\end{equation}
+This time-varying formulation enables \emph{adaptive} memory dynamics: for routine inputs, one may use smaller write strength (effectively smaller $B_t$) and stronger retention (effectively larger $A_t$); for anomalies, one may increase $B_t$ to ensure rapid encoding and decrease $A_t$ to reduce reliance on outdated context.
+
+
+\paragraph{Remark (biological and modelling perspective).}
+From a biological viewpoint, memory is gated. Novel or emotionally salient events are typically written more strongly than routine events. In particular, \emph{traumatic} events may not only be ``strongly written''; they can also reduce the influence of prior context, or even trigger a partial reset of what is stored. 
+
+From a modelling viewpoint, this suggests that the update rule should depend on the current input $x_t$, so that the effective parameters can change over time: $(A,B,C) \rightarrow (A_t,B_t,C_t)$. This is the core motivation for selective, time-varying mechanisms in modern sequence models such as \textsc{Mamba}.
+
+\subsection{Discretisation and the Role of $\Delta_t$}
+\label{app:dt-discretisation}
+
+The limitation of an LTI SSM is that it applies the same memory update rule to every input. 
+\textsc{Mamba} addresses this by making the \emph{effective} update input-dependent (hence ``selective''). 
+A convenient way to see this is to start from a continuous-time state space model and then discretise it.
+
+\paragraph{Continuous-time selective SSM.}
+We consider the continuous dynamics
+\begin{equation}
+    \dot{h}(t) = A h(t) + B(t)\,x(t), 
+    \qquad 
+    y(t) = C(t)\,h(t),
+    \label{eq:cts_ssm}
+\end{equation}
+where $h(t)$ is the memory state and $x(t)$ is the input signal.
+Crucially, $B(t)$ and $C(t)$ are allowed to vary with time (and, in practice, with the input), while $A$ is kept fixed.
+
+\paragraph{Why $A$ is chosen to be stable (typically negative).}
+The homogeneous system $\dot{h}(t)=Ah(t)$ has the solution $h(t)=\exp(At)h(0)$.
+To prevent the state from exploding over long sequences, we require the system to be stable, i.e.
+\begin{equation}
+    \mathrm{Re}(\lambda(A)) < 0
+    \quad
+    (\text{in 1D this reduces to } A<0),
+\end{equation}
+so that $\exp(At)$ decays with time and past contributions do not grow without bound.
+
+\paragraph{ZOH discretisation.}
+To obtain a discrete recurrence, we discretise \eqref{eq:cts_ssm} using a zero-order hold (ZOH) assumption on each interval:
+over the step of length $\Delta_t$, we treat $x(t)$ and $B(t)$ as constants equal to $x_t$ and $B_t$.
+This yields the discrete update
+\begin{equation}
+    h_t = \bar{A}_t h_{t-1} + \bar{B}_t x_t,
+    \qquad
+    y_t = C_t h_t,
+    \label{eq:dts_ssm}
+\end{equation}
+with
+\begin{equation}
+    \bar{A}_t = \exp(\Delta_t A),
+    \label{eq:Atbar}
+\end{equation}
+and
+\begin{equation}
+    \bar{B}_t 
+    = \left(\int_{0}^{\Delta_t}\exp(sA)\,ds\right) B_t
+    = A^{-1}\!\left(\exp(\Delta_t A)-I\right) B_t,
+    \label{eq:Btbar}
+\end{equation}
+where the last equality assumes $A$ is invertible (the integral form is always valid).
+
+\paragraph{Interpretation: $\Delta_t$ acts like a gate between ``keep'' and ``write''.}
+Because $A$ is stable (negative in the scalar case), increasing $\Delta_t$ makes $\Delta_t A$ more negative, hence
+\[
+\exp(\Delta_t A) \;\downarrow
+\quad \Rightarrow \quad
+\bar{A}_t \text{ becomes smaller (less past is carried over).}
+\]
+At the same time, the factor
+\[
+\int_{0}^{\Delta_t}\exp(sA)\,ds
+\]
+increases with $\Delta_t$, so $\bar{B}_t$ becomes larger (more of the new input is written in).
+Therefore, $\Delta_t$ directly controls the trade-off:
+\begin{itemize}
+    \item \textbf{Small $\Delta_t$:} $\bar{A}_t \approx I$ and $\bar{B}_t$ is small $\;\Rightarrow\;$ strong retention, weak writing.
+    \item \textbf{Large $\Delta_t$:} $\bar{A}_t$ is small and $\bar{B}_t$ is large $\;\Rightarrow\;$ weak retention, strong writing.
+\end{itemize}
+
+\paragraph{London-weather example.}
+In the London-weather story, a routine rainy day should correspond to a small $\Delta_t$ (do not overwrite memory), while a rare high-salience event (e.g.\ an ``alien invasion'') should correspond to a large $\Delta_t$ (write strongly and reduce reliance on prior context).
+
+\paragraph{What remains to be designed.}
+Up to this point, the time-varying parts are $\Delta_t$, $B_t$, and $C_t$.
+In \textsc{Mamba}, these quantities are produced from the current input via learnable functions:
+\begin{equation}
+    \Delta_t = f(x_t), \qquad B_t = g(x_t), \qquad C_t = h(x_t).
+\end{equation}
+The next subsection explains how these functions are parameterised in practice and why this yields an efficient selective update.
+
+
+
+
+\subsection{Input-Dependent Parametrisation in \textsc{Mamba}}
+\label{app:mamba-param}
+
+We continue with the notation $x_t \in \mathbb{R}^{d_{\text{model}}}$ and $h_t \in \mathbb{R}^{d_{\text{state}}}$. 
+The key step in Mamba is to produce the time-varying quantities
+\[
+\Delta_t,\; B_t,\; C_t
+\]
+directly from the current input $x_t$, i.e.\ $\Delta_t=f(x_t)$, $B_t=g(x_t)$, $C_t=h(x_t)$. 
+This section describes the parameterisation used in the implementation.
+
+\paragraph{Overview.}
+Given an input token $x_t$, the model:\\
+(i) expands it to a higher-dimensional internal width $d_{\text{inner}}$,\\
+(ii) injects local context via a causal 1D convolution,\\
+(iii) projects the result to obtain three selective outputs: a low-rank representation of $\Delta_t$ and the vectors $B_t$ and $C_t$.
+The overall flow is:
+\[
+x_t 
+\;\xrightarrow{\;\texttt{in\_proj}\;}
+(u_t, z_t)
+\;\xrightarrow{\;\text{causal conv + SiLU on }u_t\;}
+\tilde{u}_t
+\;\xrightarrow{\;\texttt{x\_proj}\;}
+(\Delta^{\text{raw}}_t, B_t, C_t)
+\;\xrightarrow{\;\texttt{dt\_proj + softplus}\;}
+\Delta_t.
+\]
+
+\subsubsection{Input expansion and the two branches}
+\label{app:mamba-inproj}
+
+First, \texttt{in\_proj} maps $x_t$ from $d_{\text{model}}$ to $2d_{\text{inner}}$, and we split the output into two $d_{\text{inner}}$-dimensional branches:
+\begin{equation}
+    [u_t, z_t] = W_{\text{in}} x_t,
+    \qquad 
+    u_t, z_t \in \mathbb{R}^{d_{\text{inner}}}.
+    \label{eq:inproj_split}
+\end{equation}
+The $u_t$ branch carries the main content used to generate selective parameters. 
+The $z_t$ branch is a gate used later to modulate the output (so it can be ignored at first reading).
+
+\paragraph{Remark.}
+The expansion to $d_{\text{inner}}$ increases the feature capacity of the \emph{parameter generator} that will produce $\Delta_t, B_t, C_t$.
+
+\subsubsection{Local context via causal convolution}
+\label{app:mamba-conv}
+
+A depthwise causal 1D convolution is applied to the $u$-stream, followed by a SiLU nonlinearity:
+\begin{equation}
+    \tilde{u}_t = \mathrm{SiLU}\!\big(\mathrm{CausalConv1D}(u_{\le t})\big),
+    \qquad 
+    \tilde{u}_t \in \mathbb{R}^{d_{\text{inner}}}.
+    \label{eq:conv_silu}
+\end{equation}
+This step provides a short local window of past information before any state update is computed.
+
+\paragraph{Why this matters.}
+If parameter selection depended only on the instantaneous $x_t$, the model would struggle to judge whether an event is ``routine'' or ``rare'' (e.g.\ an ``alien invasion'' is only anomalous relative to nearby context). 
+The causal convolution supplies that local reference.
+
+\subsubsection{Producing $(\Delta_t, B_t, C_t)$}
+\label{app:mamba-xproj}
+
+Next, \texttt{x\_proj} maps $\tilde{u}_t$ to a vector of dimension $d_{\text{rank}} + 2d_{\text{state}}$, which is split into three parts:
+\begin{equation}
+    [\Delta^{\text{raw}}_t,\, B_t,\, C_t] 
+    = W_{\text{x}} \tilde{u}_t,
+    \label{eq:xproj_split}
+\end{equation}
+where
+\[
+\Delta^{\text{raw}}_t \in \mathbb{R}^{d_{\text{rank}}}, 
+\qquad
+B_t \in \mathbb{R}^{d_{\text{state}}},
+\qquad
+C_t \in \mathbb{R}^{d_{\text{state}}}.
+\]
+
+\paragraph{Remark (why $d_{\text{rank}} \ll d_{\text{inner}}$).}
+The step size $\Delta_t$ is ultimately required at width $d_{\text{inner}}$, but generating it directly at that width would be expensive.
+\textsc{Mamba} therefore uses a low-rank bottleneck: it predicts $\Delta^{\text{raw}}_t$ in a small dimension $d_{\text{rank}}$, then lifts it back to $d_{\text{inner}}$.
+
+\subsubsection{$\Delta_t$ projection and positivity}
+\label{app:mamba-dt}
+
+The low-rank $\Delta^{\text{raw}}_t$ is projected to $d_{\text{inner}}$ via \texttt{dt\_proj}:
+\begin{equation}
+    s_t = W_{\Delta}\,\Delta^{\text{raw}}_t + b_{\Delta},
+    \qquad
+    s_t \in \mathbb{R}^{d_{\text{inner}}}.
+    \label{eq:dt_proj}
+\end{equation}
+Finally, \textsc{Mamba} enforces positivity of the step size using a softplus:
+\begin{equation}
+    \Delta_t = \mathrm{softplus}(s_t),
+    \qquad
+    \Delta_t \in \mathbb{R}^{d_{\text{inner}}}.
+    \label{eq:dt_softplus}
+\end{equation}
+
+\paragraph{Remark (why positivity).}
+$\Delta_t$ plays the role of a discretisation step size. Ensuring $\Delta_t>0$ avoids degenerate or unstable behaviour and makes the interpretation in the discretised update well-defined.
+
+\subsubsection{Bias initialisation and log-uniform sampling}
+\label{app:mamba-bias-init}
+
+The initial range of step sizes is chosen as $\Delta_{\min} \le \Delta_t \le \Delta_{\max}$ (e.g.\ $10^{-3}$ to $10^{-1}$). 
+Sampling $\Delta$ uniformly in \emph{linear} space would over-represent large values.
+Instead, we sample $\Delta$ approximately \emph{log-uniformly} so that each order of magnitude is represented similarly:
+\[
+\log \Delta \sim \mathrm{Uniform}(\log \Delta_{\min}, \log \Delta_{\max}).
+\]
+To make $\Delta_t \approx \mathrm{softplus}(b_{\Delta})$ at initialisation (when the learned term is near zero), the bias is set via the inverse softplus:
+\begin{equation}
+    b_{\Delta} = \mathrm{softplus}^{-1}(\Delta_{\text{init}})
+    = \log\!\big(\exp(\Delta_{\text{init}})-1\big),
+    \label{eq:bias_init}
+\end{equation}
+where $\Delta_{\text{init}}$ is sampled log-uniformly as above.
+This initialises the model with a diverse set of timescales: small $\Delta$ supports longer retention, and large $\Delta$ supports rapid updating.
+
+\paragraph{Putting it together.}
+At each time step, the model computes $\Delta_t$, $B_t$, and $C_t$ from $x_t$ using the pipeline above, and then inserts them into the selective SSM update derived in Appendix~\ref{app:dt-discretisation}.
+
+
+
+
+
+
+
+
+
+
+\bibliographystyle{plain} 
+\bibliography{reference}
+\end{document}
